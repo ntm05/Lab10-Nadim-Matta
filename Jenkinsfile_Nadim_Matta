@@ -1,12 +1,14 @@
-// Jenkinsfile_Nadim_Matta - EECE 435L Lab 10, Part 3
+// Jenkinsfile_Nadim_Matta - EECE 435L Lab 10, Parts 3 and 4
+// Stages: Setup -> Lint -> Test -> Coverage -> Security Scan -> Deploy
 // Runs on a Linux agent (sh) or a Windows agent (bat).
 
-// Run a shell command with sh on Unix agents and bat on Windows agents.
-def run(String unixCmd, String winCmd) {
+// Run a command inside the project's virtual environment.
+// Uses sh on Unix agents and bat on Windows agents.
+def venv(String cmd) {
     if (isUnix()) {
-        sh unixCmd
+        sh ". ${env.VIRTUAL_ENV}/bin/activate && ${cmd}"
     } else {
-        bat winCmd
+        bat "call ${env.VIRTUAL_ENV}\\Scripts\\activate.bat && ${cmd}"
     }
 }
 
@@ -15,6 +17,8 @@ pipeline {
 
     environment {
         VIRTUAL_ENV = 'venv'
+        // Deployment target outside the workspace, so it survives cleanWs()
+        DEPLOY_DIR = "${env.JENKINS_HOME}/deployments/Python-CI-CD"
     }
 
     stages {
@@ -25,11 +29,14 @@ pipeline {
                     // when python is not on the Jenkins service's PATH.
                     def py = env.PYTHON ?: (isUnix() ? 'python3' : 'python')
                     if (!fileExists("${env.WORKSPACE}/${VIRTUAL_ENV}")) {
-                        run("${py} -m venv ${VIRTUAL_ENV}",
-                            "\"${py}\" -m venv ${VIRTUAL_ENV}")
+                        if (isUnix()) {
+                            sh "${py} -m venv ${VIRTUAL_ENV}"
+                        } else {
+                            bat "\"${py}\" -m venv ${VIRTUAL_ENV}"
+                        }
                     }
-                    run(". ${VIRTUAL_ENV}/bin/activate && pip install -r requirements.txt",
-                        "call ${VIRTUAL_ENV}\\Scripts\\activate.bat && python -m pip install -r requirements.txt")
+                    venv('python -m pip install --upgrade pip')
+                    venv('python -m pip install -r requirements.txt')
                 }
             }
         }
@@ -37,8 +44,7 @@ pipeline {
         stage('Lint') {
             steps {
                 script {
-                    run(". ${VIRTUAL_ENV}/bin/activate && python -m flake8 app.py",
-                        "call ${VIRTUAL_ENV}\\Scripts\\activate.bat && python -m flake8 app.py")
+                    venv('python -m flake8 app.py deploy.py tests')
                 }
             }
         }
@@ -46,8 +52,29 @@ pipeline {
         stage('Test') {
             steps {
                 script {
-                    run(". ${VIRTUAL_ENV}/bin/activate && python -m pytest",
-                        "call ${VIRTUAL_ENV}\\Scripts\\activate.bat && python -m pytest")
+                    venv('python -m pytest -v --junitxml=test-results.xml')
+                }
+            }
+        }
+
+        stage('Coverage') {
+            steps {
+                script {
+                    // Settings (source, omit, fail_under = 90) live in .coveragerc
+                    venv('python -m coverage run -m pytest -q')
+                    venv('python -m coverage report')
+                    venv('python -m coverage xml')
+                    venv('python -m coverage html')
+                }
+            }
+        }
+
+        stage('Security Scan') {
+            steps {
+                script {
+                    // Save a JSON report, then run again so any issue fails the build
+                    venv('python -m bandit app.py deploy.py -f json -o bandit-report.json --exit-zero')
+                    venv('python -m bandit app.py deploy.py')
                 }
             }
         }
@@ -55,8 +82,8 @@ pipeline {
         stage('Deploy') {
             steps {
                 script {
-                    // Deployment logic, e.g., pushing to a remote server
-                    echo "Deploying application..."
+                    echo "Deploying application to ${env.DEPLOY_DIR} ..."
+                    venv("python deploy.py --target \"${env.DEPLOY_DIR}\" --build ${env.BUILD_NUMBER}")
                 }
             }
         }
@@ -64,7 +91,16 @@ pipeline {
 
     post {
         always {
+            junit testResults: 'test-results.xml', allowEmptyResults: true
+            archiveArtifacts artifacts: 'coverage.xml, htmlcov/**, bandit-report.json, test-results.xml',
+                             allowEmptyArchive: true
             cleanWs()
+        }
+        success {
+            echo 'Pipeline finished: all stages passed.'
+        }
+        failure {
+            echo 'Pipeline failed: check the stage logs above.'
         }
     }
 }
