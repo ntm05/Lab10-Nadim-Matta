@@ -1,0 +1,70 @@
+// Jenkinsfile_Nadim_Matta - EECE 435L Lab 10, Part 3
+// Runs on a Linux agent (sh) or a Windows agent (bat).
+
+// Run a shell command with sh on Unix agents and bat on Windows agents.
+def run(String unixCmd, String winCmd) {
+    if (isUnix()) {
+        sh unixCmd
+    } else {
+        bat winCmd
+    }
+}
+
+pipeline {
+    agent any
+
+    environment {
+        VIRTUAL_ENV = 'venv'
+    }
+
+    stages {
+        stage('Setup') {
+            steps {
+                script {
+                    // PYTHON can be set in Manage Jenkins > System > Environment variables
+                    // when python is not on the Jenkins service's PATH.
+                    def py = env.PYTHON ?: (isUnix() ? 'python3' : 'python')
+                    if (!fileExists("${env.WORKSPACE}/${VIRTUAL_ENV}")) {
+                        run("${py} -m venv ${VIRTUAL_ENV}",
+                            "\"${py}\" -m venv ${VIRTUAL_ENV}")
+                    }
+                    run(". ${VIRTUAL_ENV}/bin/activate && pip install -r requirements.txt",
+                        "call ${VIRTUAL_ENV}\\Scripts\\activate.bat && python -m pip install -r requirements.txt")
+                }
+            }
+        }
+
+        stage('Lint') {
+            steps {
+                script {
+                    run(". ${VIRTUAL_ENV}/bin/activate && flake8 app.py",
+                        "call ${VIRTUAL_ENV}\\Scripts\\activate.bat && flake8 app.py")
+                }
+            }
+        }
+
+        stage('Test') {
+            steps {
+                script {
+                    run(". ${VIRTUAL_ENV}/bin/activate && python -m pytest",
+                        "call ${VIRTUAL_ENV}\\Scripts\\activate.bat && python -m pytest")
+                }
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                script {
+                    // Deployment logic, e.g., pushing to a remote server
+                    echo "Deploying application..."
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}
